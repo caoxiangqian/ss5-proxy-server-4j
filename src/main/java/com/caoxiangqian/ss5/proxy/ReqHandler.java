@@ -3,6 +3,7 @@ package com.caoxiangqian.ss5.proxy;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,8 +25,8 @@ public class ReqHandler implements Runnable {
     public void run() {
         try {
             InputStream is = socket.getInputStream();
-            byte[] buf = new byte[1024];
-            int len = is.read(buf);
+            byte[] buf = new byte[1024 * 100];
+            is.read(buf);
             int ver = buf[0]; // 协议版本
             logger.info("version: {}", ver);
             if (ver != 5) {
@@ -54,7 +55,7 @@ public class ReqHandler implements Runnable {
             os.write(5);
             os.write(USERNAME_PASSWORD);
             os.flush();
-            len = is.read(buf);
+            is.read(buf);
             int userNameLen = buf[1];
             int pwdLen = buf[2 + userNameLen];
             String userName = new String(buf, 2, userNameLen);
@@ -73,26 +74,70 @@ public class ReqHandler implements Runnable {
             int atyp = buf[3]; // 地址类型 ipV4=1,域名=3,ipV6=4
             String dstAddr = ""; // 期望目标ip
             int dstPortIdx = 4;
+            logger.info("address type: {}", atyp );
             if(atyp == 1) {
                 for(int i = 0;i < 4;i ++) {
-                    dstAddr += buf[i + 4] + ".";
+                    dstAddr += (buf[i + 4] & 0xFF);
+                    if(i < 3) {
+                    	dstAddr += ".";
+                    }
                 }
                 dstPortIdx += 4;
             } else if(atyp == 3) {
                 int hostLen = buf[4];
                 String host = new String(buf, 5, hostLen);
+                logger.info("host: " + host);
+                dstAddr = InetAddress.getByName(host).getHostAddress();
+                dstPortIdx += (1 + hostLen);
             } else if(atyp == 4){
-                for(int i = 0;i < 8;i ++) {
+            	for(int i = 0;i < 8;i ++) {
                     dstAddr += (buf[i]);
                 }
                 
+                
             }
-            int dstPort = buf[dstPortIdx]; // 期望目标地址
+            int dstPort = ((buf[dstPortIdx] & 0xff) << 8) + (buf[dstPortIdx + 1] & 0xFF); // 期望目标地址
             logger.info("ver: " + ver2 + ", cmd: " + cmd + ", rsv: " + rsv + ",atyp: " + atyp + ", dstAddr: " + dstAddr + ", dstPort: " + dstPort);
+            Socket remoteSocket = new Socket(dstAddr, dstPort);
+            OutputStream osRemote = remoteSocket.getOutputStream();
+            //05 00 00 01 00 00 00 00 00 00
+            os.write(new byte[] {5,0,0,1,0,0,0,0,0,0});
+            os.flush();
+            // 读取client请求数据，并发送给目标server
+            int len = -1;
+            while(true) {
+            	len = is.read(buf);
+            	logger.info(len + " ");
+            	if(len == -1) {
+            		logger.info("break");
+            		break;
+            	}
+            	
+            	osRemote.write(buf, 0, len);
+            	if(len < buf.length) {
+            		break;
+            	}
+            }
+            logger.info("请求转发完毕");
+            osRemote.flush();
+            
+            InputStream isRemote = remoteSocket.getInputStream();
+            while((len = isRemote.read(buf)) != -1) {
+            	logger.info("remote: " + len);
+            	os.write(buf, 0, len);
+//            	if(len < buf.length) {
+//            		break;
+//            	}
+            }
+            logger.info("响应转发完毕");
+            os.flush();
+            remoteSocket.close();
+            socket.close();
+            
 
-
-        } catch (IOException e) {
-            e.printStackTrace();
+        } catch (Exception e) {
+//            e.printStackTrace();
+        	logger.warn(e.getMessage());
             if (socket != null) {
                 try {
                     socket.close();
